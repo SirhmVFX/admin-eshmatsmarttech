@@ -1,11 +1,35 @@
 'use client';
 
 import { useState, useRef, useCallback } from 'react';
-import { ref, uploadBytesResumable, getDownloadURL, deleteObject } from 'firebase/storage';
-import { storage } from '@/lib/firebase';
 
 const MAX_SIZE = 8 * 1024 * 1024; // 8MB
 const ACCEPTED = 'image/jpeg,image/jpg,image/png,image/webp,image/gif,image/svg+xml,image/avif';
+
+async function uploadToCloudinary(file: File, folder: string) {
+  const cloudName = process.env.NEXT_PUBLIC_CLOUDINARY_CLOUD_NAME;
+  const uploadPreset = process.env.NEXT_PUBLIC_CLOUDINARY_UPLOAD_PRESET;
+
+  if (!cloudName || !uploadPreset) {
+    throw new Error('Missing Cloudinary environment variables.');
+  }
+
+  const formData = new FormData();
+  formData.append('file', file);
+  formData.append('upload_preset', uploadPreset);
+  formData.append('folder', folder);
+
+  const response = await fetch(`https://api.cloudinary.com/v1_1/${cloudName}/image/upload`, {
+    method: 'POST',
+    body: formData,
+  });
+
+  const data = await response.json();
+  if (!response.ok) {
+    throw new Error(data.error?.message || 'Cloudinary upload failed.');
+  }
+
+  return data.secure_url as string;
+}
 
 interface Props {
   value: string;
@@ -38,22 +62,15 @@ export default function ImageUpload({ value, onChange, folder = 'uploads', label
     setUploading(true);
     setProgress(0);
 
-    const ext = file.name.split('.').pop() ?? 'jpg';
-    const filename = `${folder}/${Date.now()}-${Math.random().toString(36).slice(2)}.${ext}`;
-    const storageRef = ref(storage, filename);
-    const task = uploadBytesResumable(storageRef, file, { contentType: file.type });
-
-    task.on(
-      'state_changed',
-      snap => setProgress(Math.round((snap.bytesTransferred / snap.totalBytes) * 100)),
-      err => { setError(`Upload failed: ${err.message}`); setUploading(false); },
-      async () => {
-        const url = await getDownloadURL(task.snapshot.ref);
-        onChange(url);
-        setUploading(false);
-        setProgress(0);
-      }
-    );
+    try {
+      const url = await uploadToCloudinary(file, folder);
+      onChange(url);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Upload failed.');
+    } finally {
+      setUploading(false);
+      setProgress(0);
+    }
   }, [folder, onChange]);
 
   const handleFile = (file: File | undefined) => { if (file) upload(file); };
@@ -64,15 +81,7 @@ export default function ImageUpload({ value, onChange, folder = 'uploads', label
     handleFile(e.dataTransfer.files[0]);
   };
 
-  const handleRemove = async () => {
-    if (!value) return;
-    // Try to delete from storage if it's a Firebase URL
-    if (value.includes('firebasestorage.googleapis.com')) {
-      try {
-        const storageRef = ref(storage, value);
-        await deleteObject(storageRef);
-      } catch { /* ignore if already deleted */ }
-    }
+  const handleRemove = () => {
     onChange('');
   };
 
@@ -81,7 +90,6 @@ export default function ImageUpload({ value, onChange, folder = 'uploads', label
       {label && <label className="form-label" style={{ marginBottom: 6, display: 'block' }}>{label}</label>}
 
       {value ? (
-        /* Preview */
         <div style={{ position: 'relative', display: 'inline-block', width: '100%' }}>
           {/* eslint-disable-next-line @next/next/no-img-element */}
           <img src={value} alt="Uploaded" style={{ width: '100%', height, objectFit: 'cover', borderRadius: 5, display: 'block', border: '1px solid var(--border2)' }} />
@@ -97,7 +105,6 @@ export default function ImageUpload({ value, onChange, folder = 'uploads', label
           </div>
         </div>
       ) : (
-        /* Drop zone */
         <div
           onDragOver={e => { e.preventDefault(); setDragging(true); }}
           onDragLeave={() => setDragging(false)}
@@ -143,12 +150,10 @@ export default function ImageUpload({ value, onChange, folder = 'uploads', label
       )}
 
       <input ref={inputRef} type="file" accept={ACCEPTED} style={{ display: 'none' }}
-        onChange={e => handleFile(e.target.files?.[0])} />
+        onChange={e => { if (e.target.files?.[0]) upload(e.target.files[0]); e.target.value = ''; }} />
     </div>
   );
 }
-
-// ── Multi-image upload ─────────────────────────────────────────────────────
 
 interface MultiProps {
   values: string[];
@@ -171,29 +176,20 @@ export function MultiImageUpload({ values, onChange, folder = 'uploads', label =
     if (values.length >= max) { setError(`Maximum ${max} images allowed.`); return; }
 
     setUploading(true);
-    const ext = file.name.split('.').pop() ?? 'jpg';
-    const filename = `${folder}/${Date.now()}-${Math.random().toString(36).slice(2)}.${ext}`;
-    const storageRef = ref(storage, filename);
-    const task = uploadBytesResumable(storageRef, file, { contentType: file.type });
+    setProgress(0);
 
-    task.on(
-      'state_changed',
-      snap => setProgress(Math.round((snap.bytesTransferred / snap.totalBytes) * 100)),
-      err => { setError(`Upload failed: ${err.message}`); setUploading(false); },
-      async () => {
-        const url = await getDownloadURL(task.snapshot.ref);
-        onChange([...values, url]);
-        setUploading(false);
-        setProgress(0);
-      }
-    );
+    try {
+      const url = await uploadToCloudinary(file, folder);
+      onChange([...values, url]);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Upload failed.');
+    } finally {
+      setUploading(false);
+      setProgress(0);
+    }
   };
 
-  const remove = async (idx: number) => {
-    const url = values[idx];
-    if (url.includes('firebasestorage.googleapis.com')) {
-      try { await deleteObject(ref(storage, url)); } catch { /* ignore */ }
-    }
+  const remove = (idx: number) => {
     onChange(values.filter((_, i) => i !== idx));
   };
 

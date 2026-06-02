@@ -1,8 +1,6 @@
 'use client';
 
 import { useEffect, useRef, useCallback, useState } from 'react';
-import { ref, uploadBytesResumable, getDownloadURL } from 'firebase/storage';
-import { storage } from '@/lib/firebase';
 
 interface Props {
   value: string;
@@ -20,6 +18,32 @@ type ToolbarAction =
   | 'justifyLeft' | 'justifyCenter' | 'justifyRight'
   | 'createLink' | 'insertImage' | 'insertHorizontalRule'
   | 'undo' | 'redo' | 'removeFormat';
+
+async function uploadToCloudinary(file: File, folder: string) {
+  const cloudName = process.env.NEXT_PUBLIC_CLOUDINARY_CLOUD_NAME;
+  const uploadPreset = process.env.NEXT_PUBLIC_CLOUDINARY_UPLOAD_PRESET;
+
+  if (!cloudName || !uploadPreset) {
+    throw new Error('Missing Cloudinary environment variables.');
+  }
+
+  const formData = new FormData();
+  formData.append('file', file);
+  formData.append('upload_preset', uploadPreset);
+  formData.append('folder', folder);
+
+  const response = await fetch(`https://api.cloudinary.com/v1_1/${cloudName}/image/upload`, {
+    method: 'POST',
+    body: formData,
+  });
+
+  const data = await response.json();
+  if (!response.ok) {
+    throw new Error(data.error?.message || 'Cloudinary upload failed.');
+  }
+
+  return data.secure_url as string;
+}
 
 export default function RichEditor({ value, onChange, placeholder = 'Start writing...', minHeight = 300, folder = 'blog' }: Props) {
   const editorRef = useRef<HTMLDivElement>(null);
@@ -69,18 +93,15 @@ export default function RichEditor({ value, onChange, placeholder = 'Start writi
     if (!file.type.startsWith('image/')) return;
     if (file.size > 8 * 1024 * 1024) { alert('Image must be under 8MB'); return; }
     setUploading(true);
-    const ext = file.name.split('.').pop() ?? 'jpg';
-    const filename = `${folder}/${Date.now()}.${ext}`;
-    const storageRef = ref(storage, filename);
-    const task = uploadBytesResumable(storageRef, file, { contentType: file.type });
-    task.on('state_changed', null,
-      () => setUploading(false),
-      async () => {
-        const url = await getDownloadURL(task.snapshot.ref);
-        exec('insertImage', url);
-        setUploading(false);
-      }
-    );
+
+    try {
+      const url = await uploadToCloudinary(file, folder);
+      exec('insertImage', url);
+    } catch (err) {
+      alert(err instanceof Error ? err.message : 'Unable to upload image.');
+    } finally {
+      setUploading(false);
+    }
   };
 
   const isActive = (cmd: string) => {
